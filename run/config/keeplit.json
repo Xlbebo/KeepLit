@@ -1,9 +1,18 @@
 {
   "enabled": true,
+  "billingDay": 17,
   "web": {
     "enabled": true,
     "host": "0.0.0.0",
     "port": 25580,
-    "publicUrl": ""
+    "publicUrl": "",
+    "paymentUrl": "https://tbank.ru/cf/5QSeGEpOqYH"
+  },
+  "billing": {
+    "cost": 900,
+    "currency": "₽",
+    "minHours": 0,
+    "minAmount": 50,
+    "roundStep": 25
   }
 }

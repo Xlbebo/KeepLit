@@ -18,6 +18,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.ArrayList;
+
+
+
 
 @Mod(KeepLitMod.MODID)
 public class KeepLitMod {
@@ -30,6 +34,8 @@ public class KeepLitMod {
 
     private final Path keeplitDir;
     private SessionStore sessionStore;
+    private PaymentStore paymentStore;
+
 
     private HttpServer httpServer;
 
@@ -43,6 +49,7 @@ public class KeepLitMod {
         try { Files.createDirectories(keeplitDir); } catch (Exception ignored) {}
 
         sessionStore = new SessionStore(keeplitDir);
+        paymentStore = new PaymentStore(keeplitDir);
 
         // 3. Слушатели
         NeoForge.EVENT_BUS.addListener(this::onServerStarted);
@@ -51,6 +58,7 @@ public class KeepLitMod {
         NeoForge.EVENT_BUS.addListener(this::onPlayerLogout);
 
         LOGGER.info("[KeepLit] Мод инициализирован.");
+
     }
 
     // --- События сервера ---
@@ -83,6 +91,7 @@ public class KeepLitMod {
         }
     }
 
+
     // --- Веб-сервер ---
 
     private void startWebServer() {
@@ -90,18 +99,63 @@ public class KeepLitMod {
             InetSocketAddress address = new InetSocketAddress(config.web.host, config.web.port);
             httpServer = HttpServer.create(address, 0);
 
+            // Главная страница
             httpServer.createContext("/", exchange -> {
+                // Обработка POST запроса для отметки оплаты
+                if ("POST".equalsIgnoreCase(exchange.getRequestMethod()) && exchange.getRequestURI().getPath().equals("/api/mark-paid")) {
+                    handleMarkPaid(exchange);
+                    return;
+                }
+
+                BillingPeriod period = new BillingPeriod(config.billingDay);
                 List<Session> sessions = sessionStore.getSessions();
-                List<StatsCalculator.PlayerStats> stats = StatsCalculator.calculate(sessions);
+                StatsCalculator.BillingResult billing = StatsCalculator.calculate(sessions, period, config);
+                List<Payment> payments = paymentStore.getPayments();
 
-                long serverTotalMs = stats.stream().mapToLong(s -> s.totalMs).sum();
-                long serverMinutes = serverTotalMs / (1000 * 60);
-                String serverFormatted = String.format("%d ч %d мин", serverMinutes / 60, serverMinutes % 60);
+                // Считаем реальный прогресс сбора (все отметки за период)
+                long collectedTotal = paymentStore.getTotal(period.startMs);
+                int progressPercent = billing.totalCost > 0 ? (int) Math.min(100, (collectedTotal * 100) / billing.totalCost) : 0;
 
-                StringBuilder tableRows = new StringBuilder();
-                for (StatsCalculator.PlayerStats p : stats) {
-                    tableRows.append(String.format(
-                        "<tr><td>%s</td><td>%s</td></tr>",
+                // Собираем UUID тех, кто уже нажал кнопку "Я оплатил"
+                List<String> paidUuids = new ArrayList<>();
+                for (Payment p : payments) {
+                    if (p.timestamp >= period.startMs) {
+                        paidUuids.add(p.playerUuid);
+                    }
+                }
+
+                StringBuilder activeRows = new StringBuilder();
+                for (StatsCalculator.PlayerStats p : billing.activePlayers) {
+                    boolean isPaid = paidUuids.contains(p.uuid);
+
+                    String actionCell;
+                    if (isPaid) {
+                        actionCell = "<span class='paid-badge'>✔ Оплачено</span>";
+                    } else {
+                        actionCell = String.format(
+                            "<button class='btn' onclick=\"markPaid('%s', %d)\">Я оплатил</button>",
+                            p.uuid, p.recommendedAmount
+                        );
+                    }
+
+                    activeRows.append(String.format(
+                        "<tr><td>%s</td><td>%s</td><td>%s</td><td class='amount'>%d %s</td><td>%s</td></tr>",
+                        escapeHtml(p.name),
+                        p.getFormattedTime(),
+                        p.getFormattedShare(),
+                        p.recommendedAmount,
+                        escapeHtml(billing.currency),
+                        actionCell
+                    ));
+                }
+                if (activeRows.length() == 0) {
+                    activeRows.append("<tr><td colspan='5' class='empty'>Нет активных игроков</td></tr>");
+                }
+
+                StringBuilder newbieRows = new StringBuilder();
+                for (StatsCalculator.PlayerStats p : billing.newbies) {
+                    newbieRows.append(String.format(
+                        "<tr><td>%s</td><td>%s</td><td class='newbie-note'>Платить не обязательно</td></tr>",
                         escapeHtml(p.name),
                         p.getFormattedTime()
                     ));
@@ -112,31 +166,56 @@ public class KeepLitMod {
                         <html lang="ru">
                         <head>
                             <meta charset="UTF-8">
-                            <title>KeepLit - Статистика</title>
+                            <title>KeepLit - Биллинг</title>
                             <style>
-                                body { background: #202020; color: #e8e8e8; font-family: monospace; padding: 48px; max-width: 800px; margin: 0 auto; }
+                                body { background: #202020; color: #e8e8e8; font-family: monospace; padding: 48px; max-width: 900px; margin: 0 auto; }
                                 h1 { color: #ff9900; text-align: center; }
-                                .card { background: #2d2d2d; border: 1px solid #444; padding: 24px; margin-bottom: 20px; }
-                                .total { font-size: 24px; color: #4caf50; text-align: center; margin-bottom: 10px; }
+                                h2 { color: #ff9900; border-bottom: 1px solid #444; padding-bottom: 5px; }
+                                .period { text-align: center; color: #aaa; margin-bottom: 20px; }
+                                .card { background: #2d2d2d; border: 1px solid #444; padding: 24px; margin-bottom: 30px; border-radius: 8px; }
+                                .target { font-size: 28px; color: #4caf50; text-align: center; margin-bottom: 10px; }
+                                .progress-bar { background: #444; border-radius: 4px; height: 20px; margin: 15px 0; overflow: hidden; }
+                                .progress-fill { background: #4caf50; height: 100%%; text-align: center; color: #fff; font-weight: bold; line-height: 20px; transition: width 0.5s; }
                                 table { width: 100%%; border-collapse: collapse; }
-                                th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #444; }
+                                th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
                                 th { color: #ff9900; }
+                                .amount { font-weight: bold; color: #fff; text-align: right; }
+                                .newbie-note { color: #888; font-style: italic; }
+                                .empty { text-align: center; color: #666; }
+                                .btn { background: #ff9900; color: #000; border: none; padding: 6px 12px; cursor: pointer; font-weight: bold; border-radius: 4px; }
+                                .btn:hover { background: #ffb84d; }
+                                .paid-badge { color: #4caf50; font-weight: bold; }
+                                .pay-link { display: block; text-align: center; margin: 20px 0; }
+                                .pay-link a { background: #4caf50; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-size: 18px; }
                             </style>
                         </head>
                         <body>
                             <h1>🔥 KeepLit</h1>
+                            <div class="period">Расчётный период: <b>%s</b></div>
 
                             <div class="card">
-                                <div class="total">Общее время сервера: %s</div>
+                                <div class="target">Цель: %d %s</div>
+                                <div style="text-align:center; font-size: 18px;">Собрано: <b>%d %s</b></div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: %d%%;">%d%%</div>
+                                </div>
+
+                                <div class="pay-link">
+                                    <a href="%s" target="_blank">💳 Перейти к оплате</a>
+                                </div>
+                                <p style="text-align:center; font-size:12px; color:#888;">После перевода нажмите "Я оплатил" в таблице.</p>
                             </div>
 
                             <div class="card">
-                                <h2>Игроки</h2>
+                                <h2>Участники сбора</h2>
                                 <table>
                                     <thead>
                                         <tr>
-                                            <th>Ник</th>
-                                            <th>Время за период</th>
+                                            <th>Игрок</th>
+                                            <th>Время</th>
+                                            <th>Доля</th>
+                                            <th style="text-align:right;">Рекомендация</th>
+                                            <th>Статус</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -144,9 +223,45 @@ public class KeepLitMod {
                                     </tbody>
                                 </table>
                             </div>
+
+                            <div class="card" style="background: #252525;">
+                                <h2 style="color: #aaa;">Новички</h2>
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Игрок</th>
+                                            <th>Время</th>
+                                            <th>Статус</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        %s
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <script>
+                                function markPaid(uuid, amount) {
+                                    if (!confirm('Вы действительно оплатили ' + amount + ' ' + '%s?')) return;
+                                    fetch('/api/mark-paid', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ uuid: uuid, amount: amount })
+                                    }).then(r => { if(r.ok) location.reload(); else alert('Ошибка'); });
+                                }
+                            </script>
                         </body>
                         </html>
-                        """.formatted(serverFormatted, tableRows.toString());
+                        """.formatted(
+                            period.getFormattedRange(),
+                            billing.totalCost, escapeHtml(billing.currency),
+                            collectedTotal, escapeHtml(billing.currency),
+                            progressPercent, progressPercent,
+                            config.web.paymentUrl != null ? config.web.paymentUrl : "#",
+                            activeRows.toString(),
+                            newbieRows.toString(),
+                            escapeHtml(billing.currency)
+                        );
 
                 byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
@@ -162,6 +277,27 @@ public class KeepLitMod {
         }
     }
 
+    private void handleMarkPaid(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
+        try {
+            // Читаем тело запроса
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(body).getAsJsonObject();
+
+            String uuid = json.get("uuid").getAsString();
+            long amount = json.get("amount").getAsLong();
+
+            paymentStore.addPayment(uuid, amount);
+            LOGGER.info("[KeepLit] Игрок {} отметил оплату: {} {}", uuid, amount, config.billing.currency);
+
+            exchange.sendResponseHeaders(200, 0);
+        } catch (Exception e) {
+            LOGGER.error("[KeepLit] Ошибка обработки отметки оплаты", e);
+            exchange.sendResponseHeaders(500, 0);
+        } finally {
+            exchange.close();
+        }
+    }
+
     private void stopWebServer() {
         if (httpServer != null) {
             httpServer.stop(0);
@@ -174,5 +310,12 @@ public class KeepLitMod {
         if (value == null) return "";
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                     .replace("\"", "&quot;").replace("'", "&#39;");
+    }
+
+    private static String formatTotalTime(long ms) {
+        long minutes = ms / (1000 * 60);
+        long hours = minutes / 60;
+        long mins = minutes % 60;
+        return String.format("%d ч %d мин", hours, mins);
     }
 }

@@ -22,13 +22,26 @@ public class KeepLitConfig {
 
     public boolean enabled = true;
 
+    public int billingDay = 17;
+
     public Web web = new Web();
+
+    public Billing billing = new Billing();
+
+    public static class Billing {
+        public int cost = 900;          // Стоимость аренды
+        public String currency = "₽";   // Валюта
+        public int minHours = 2;        // Минимум часов для участия
+        public int minAmount = 50;      // Минимальный взнос
+        public int roundStep = 25;      // Шаг округления (вверх)
+    }
 
     public static class Web {
         public boolean enabled = true;
         public String host = "0.0.0.0";
         public int port = 25580;
         public String publicUrl = "";
+        public String paymentUrl = "";
     }
 
     public static KeepLitConfig loadOrCreate(Path path) {
