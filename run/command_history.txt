@@ -9,3 +9,5 @@
 /keeplit stats
 /keeplit link
 /keeplit export
+/keeplit stats
+/keeplit export

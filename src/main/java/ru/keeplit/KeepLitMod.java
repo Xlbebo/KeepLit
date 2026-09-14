@@ -31,6 +31,9 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.HoverEvent;
 
+import java.util.Map;
+import java.util.HashMap;
+
 
 
 
@@ -93,6 +96,7 @@ public class KeepLitMod {
 
         dispatcher.register(Commands.literal("keeplit")
 
+            // /keeplit link - доступна всем игрокам
             // /keeplit link - доступна всем игрокам
             // /keeplit link - доступна всем игрокам
             .then(Commands.literal("link")
@@ -322,6 +326,11 @@ public class KeepLitMod {
                 List<Session> sessions = sessionStore.getSessions();
                 StatsCalculator.BillingResult billing = StatsCalculator.calculate(sessions, period, config);
                 List<Payment> payments = paymentStore.getPayments();
+                // Последний вход каждого игрока
+                Map<String, Long> lastSeen = new HashMap<>();
+                for (Session s : sessions) {
+                    lastSeen.merge(s.uuid, s.joinAt, Math::max);
+                }
 
                 // Считаем реальный прогресс сбора (все отметки за период)
                 long collectedTotal = paymentStore.getTotal(period.startMs);
@@ -338,6 +347,7 @@ public class KeepLitMod {
                 StringBuilder activeRows = new StringBuilder();
                 for (StatsCalculator.PlayerStats p : billing.activePlayers) {
                     boolean isPaid = paidUuids.contains(p.uuid);
+                    String lastSeenStr = lastSeen.containsKey(p.uuid) ? formatDate(lastSeen.get(p.uuid)) : "-";
 
                     String actionCell;
                     if (isPaid) {
@@ -350,8 +360,9 @@ public class KeepLitMod {
                     }
 
                     activeRows.append(String.format(
-                        "<tr><td>%s</td><td>%s</td><td>%s</td><td class='amount'>%d %s</td><td>%s</td></tr>",
+                        "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='amount'>%d %s</td><td>%s</td></tr>",
                         escapeHtml(p.name),
+                        lastSeenStr,
                         p.getFormattedTime(),
                         p.getFormattedShare(),
                         p.recommendedAmount,
@@ -360,14 +371,16 @@ public class KeepLitMod {
                     ));
                 }
                 if (activeRows.length() == 0) {
-                    activeRows.append("<tr><td colspan='5' class='empty'>Нет активных игроков</td></tr>");
+                    activeRows.append("<tr><td colspan='6' class='empty'>Нет активных игроков</td></tr>");
                 }
 
                 StringBuilder newbieRows = new StringBuilder();
                 for (StatsCalculator.PlayerStats p : billing.newbies) {
+                    String lastSeenStr = lastSeen.containsKey(p.uuid) ? formatDate(lastSeen.get(p.uuid)) : "-";
                     newbieRows.append(String.format(
-                        "<tr><td>%s</td><td>%s</td><td class='newbie-note'>Платить не обязательно</td></tr>",
+                        "<tr><td>%s</td><td>%s</td><td>%s</td><td class='newbie-note'>Платить не обязательно</td></tr>",
                         escapeHtml(p.name),
+                        lastSeenStr,
                         p.getFormattedTime()
                     ));
                 }
@@ -426,6 +439,7 @@ public class KeepLitMod {
                                     <thead>
                                         <tr>
                                             <th>Игрок</th>
+                                            <th>Последний вход</th>
                                             <th>Время</th>
                                             <th>Доля</th>
                                             <th style="text-align:right;">Рекомендация</th>
@@ -444,6 +458,7 @@ public class KeepLitMod {
                                     <thead>
                                         <tr>
                                             <th>Игрок</th>
+                                            <th>Последний вход</th>
                                             <th>Время</th>
                                             <th>Статус</th>
                                         </tr>
@@ -533,5 +548,13 @@ public class KeepLitMod {
         long hours = minutes / 60;
         long mins = minutes % 60;
         return String.format("%d ч %d мин", hours, mins);
+    }
+
+    private String formatDate(long ms) {
+        java.time.ZonedDateTime zdt = java.time.Instant.ofEpochMilli(ms)
+            .atZone(java.time.ZoneId.of(config.timeZone));
+        return String.format("%02d.%02d.%d %02d:%02d",
+            zdt.getDayOfMonth(), zdt.getMonthValue(), zdt.getYear(),
+            zdt.getHour(), zdt.getMinute());
     }
 }
