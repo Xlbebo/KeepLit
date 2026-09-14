@@ -117,7 +117,6 @@ public class KeepLitMod {
 
             // /keeplit stats - только для OP
             .then(Commands.literal("stats")
-                .requires(source -> source.hasPermission(3))
                 .executes(ctx -> {
                     BillingPeriod period = new BillingPeriod(config.billingDay, config.timeZone);
                     List<Session> sessions = sessionStore.getSessions();
