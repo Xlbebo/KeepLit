@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "billingDay": 18,
+  "billingDay": 13,
   "web": {
     "enabled": true,
     "host": "0.0.0.0",

@@ -1,0 +1,21 @@
+{
+  "periodStart": "2026-08-18",
+  "periodEnd": "2026-09-13",
+  "createdAt": "2026-09-14T23:44:26.705314",
+  "targetCost": 900,
+  "currency": "₽",
+  "totalCollected": 900,
+  "totalActiveMs": 0,
+  "activePlayers": [],
+  "newbies": [
+    {
+      "uuid": "380df991-f603-344c-a090-369bad2a924a",
+      "name": "Dev",
+      "totalMs": 179052,
+      "sharePercent": 0.0,
+      "recommendedAmount": 0,
+      "lastSeenMs": 1789417185886,
+      "paid": false
+    }
+  ]
+}

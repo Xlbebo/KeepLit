@@ -34,6 +34,18 @@ public class BillingPeriod {
         this.endMs = this.end.atZone(zoneId).toInstant().toEpochMilli();
     }
 
+    public static BillingPeriod span(java.time.LocalDate start, java.time.LocalDate end, String timeZone) {
+        return new BillingPeriod(start, end, ZoneId.of(timeZone));
+    }
+
+    private BillingPeriod(java.time.LocalDate start, java.time.LocalDate end, ZoneId zone) {
+        this.zoneId = zone;
+        this.start = start.atStartOfDay();
+        this.end = end.atStartOfDay();
+        this.startMs = this.start.atZone(zone).toInstant().toEpochMilli();
+        this.endMs = this.end.atZone(zone).toInstant().toEpochMilli();
+    }
+
     public String getFormattedRange() {
         return String.format("%s — %s",
             start.toLocalDate().toString(),
@@ -53,4 +65,5 @@ public class BillingPeriod {
     public boolean isAlmostOver() {
         return getDaysRemaining() <= 5;
     }
+
 }

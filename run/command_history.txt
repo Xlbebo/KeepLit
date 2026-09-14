@@ -11,3 +11,11 @@
 /keeplit export
 /keeplit stats
 /keeplit export
+/keeplit link
+/keeplit stats
+/keeplit link
+/keeplit reload
+/gamemode creative
+/keeplit link
+/keeplit
+/keeplit stats
