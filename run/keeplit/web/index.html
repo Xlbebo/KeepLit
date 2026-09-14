@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KeepLit - Биллинг</title>
+    <style>
+        body { background: #202020; color: #e8e8e8; font-family: monospace; padding: 48px; max-width: 900px; margin: 0 auto; }
+        h1 { color: #ff9900; text-align: center; }
+        h2 { color: #ff9900; border-bottom: 1px solid #444; padding-bottom: 5px; }
+        .period { text-align: center; color: #aaa; margin-bottom: 20px; }
+        .card { background: #2d2d2d; border: 1px solid #444; padding: 24px; margin-bottom: 30px; border-radius: 8px; }
+        .target { font-size: 28px; color: #4caf50; text-align: center; margin-bottom: 10px; }
+        .progress-bar { background: #444; border-radius: 4px; height: 20px; margin: 15px 0; overflow: hidden; }
+        .progress-fill { background: #4caf50; height: 100%; text-align: center; color: #fff; font-weight: bold; line-height: 20px; transition: width 0.5s; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
+        th { color: #ff9900; }
+        .amount { font-weight: bold; color: #fff; text-align: right; }
+        .newbie-note { color: #888; font-style: italic; }
+        .empty { text-align: center; color: #666; }
+        .btn { background: #ff9900; color: #000; border: none; padding: 6px 12px; cursor: pointer; font-weight: bold; border-radius: 4px; }
+        .btn:hover { background: #ffb84d; }
+        .paid-badge { color: #4caf50; font-weight: bold; }
+        .pay-link { display: block; text-align: center; margin: 20px 0; }
+        .pay-link a { background: #4caf50; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-size: 18px; }
+        .days-remaining { text-align: center; font-size: 16px; margin-bottom: 15px; }
+        .days-remaining.warning { color: #ff4444; font-weight: bold; }
+        .qr-box { background: #fff; padding: 12px; border-radius: 8px; display: inline-block; }
+    </style>
+</head>
+<body>
+    <h1>🔥 KeepLit</h1>
+    <div style="text-align:center; margin-bottom:15px;">
+        <a href="/history" style="color:#ff9900; text-decoration:none;">📚 История периодов</a>
+    </div>
+    <div class="period">Расчётный период: <b>{{PERIOD_RANGE}}</b></div>
+    <div class="days-remaining {{DAYS_WARNING_CLASS}}">До конца периода: <b>{{DAYS_REMAINING}}</b> дн.</div>
+
+    <div class="card">
+        <div class="target">Цель: {{TARGET_COST}} {{CURRENCY}}</div>
+        <div style="text-align:center; font-size: 18px;">Собрано: <b>{{COLLECTED_TOTAL}} {{CURRENCY}}</b></div>
+        <div class="progress-bar">
+            <div class="progress-fill" style="width: {{PROGRESS_PERCENT}}%;">{{PROGRESS_PERCENT}}%</div>
+        </div>
+        <div class="pay-link">
+            <a href="{{PAYMENT_URL}}" target="_blank">💳 Перейти к оплате</a>
+        </div>
+        <p style="text-align:center; font-size:12px; color:#888;">После перевода нажмите "Я оплатил" в таблице.</p>
+    </div>
+
+    <div class="card">
+        <h2>Участники сбора</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Игрок</th>
+                    <th>Последний вход</th>
+                    <th>Время</th>
+                    <th>Доля</th>
+                    <th style="text-align:right;">Рекомендация</th>
+                    <th>Статус</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{ACTIVE_ROWS}}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card" style="background: #252525;">
+        <h2 style="color: #aaa;">Новички</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Игрок</th>
+                    <th>Последний вход</th>
+                    <th>Время</th>
+                    <th>Статус</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{NEWBIE_ROWS}}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card" style="text-align:center;">
+        <h2>QR-код</h2>
+        <div id="qr" class="qr-box"></div>
+        <p style="color:#888; font-size:12px;">Отсканируй код телефоном, чтобы открыть страницу оплаты</p>
+    </div>
+
+    <script src="/qrcode.min.js"></script>
+    <script>
+        function markPaid(uuid, amount) {
+            if (!confirm('Вы действительно оплатили ' + amount + ' {{CURRENCY}}?')) return;
+            fetch('/api/mark-paid', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ uuid: uuid, amount: amount })
+            }).then(r => { if (r.ok) location.reload(); else alert('Ошибка'); });
+        }
+
+        if (typeof QRCode !== 'undefined') {
+            new QRCode(document.getElementById('qr'), {
+                text: '{{QR_TEXT}}',
+                width: 200,
+                height: 200,
+                colorDark: '#000000',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.M
+            });
+        } else {
+            document.getElementById('qr').outerHTML = '<p style="color:#888;">QR-библиотека не найдена.</p>';
+        }
+    </script>
+</body>
+</html>

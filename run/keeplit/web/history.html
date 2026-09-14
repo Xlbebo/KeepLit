@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KeepLit - История периодов</title>
+    <style>
+        body { background: #202020; color: #e8e8e8; font-family: monospace; padding: 48px; max-width: 900px; margin: 0 auto; }
+        h1 { color: #ff9900; text-align: center; }
+        .back { text-align: center; margin-bottom: 20px; }
+        .back a { color: #ff9900; text-decoration: none; }
+        .card { background: #2d2d2d; border: 1px solid #444; padding: 24px; border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
+        th { color: #ff9900; }
+        td a { color: #4caf50; font-weight: bold; text-decoration: none; }
+        td a:hover { text-decoration: underline; }
+        .empty { text-align: center; color: #666; }
+    </style>
+</head>
+<body>
+    <h1>📚 История периодов</h1>
+    <div class="back"><a href="/">← К текущему периоду</a></div>
+    <div class="card">
+        <table>
+            <thead>
+                <tr>
+                    <th>Период</th>
+                    <th>Собрано</th>
+                    <th>Прогресс</th>
+                    <th>Игроков</th>
+                </tr>
+            </thead>
+            <tbody>{{REPORT_ROWS}}</tbody>
+        </table>
+    </div>
+</body>
+</html>

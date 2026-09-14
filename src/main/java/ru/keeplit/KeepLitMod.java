@@ -45,23 +45,22 @@ public class KeepLitMod {
     private SessionStore sessionStore;
     private PaymentStore paymentStore;
     private PeriodHistoryStore historyStore;
+    private WebTemplateStore templateStore;
 
     private HttpServer httpServer;
 
     public KeepLitMod() {
-        // 1. Конфиг
         configPath = FMLPaths.CONFIGDIR.get().resolve("keeplit.json");
         config = KeepLitConfig.loadOrCreate(configPath);
 
-        // 2. Папка для данных мода
         keeplitDir = FMLPaths.GAMEDIR.get().resolve("keeplit");
         try { Files.createDirectories(keeplitDir); } catch (Exception ignored) {}
 
         sessionStore = new SessionStore(keeplitDir);
         paymentStore = new PaymentStore(keeplitDir);
         historyStore = new PeriodHistoryStore(keeplitDir);
+        templateStore = new WebTemplateStore(keeplitDir);
 
-        // 3. Слушатели
         NeoForge.EVENT_BUS.addListener(this::onServerStarted);
         NeoForge.EVENT_BUS.addListener(this::onServerStopping);
         NeoForge.EVENT_BUS.addListener(this::onPlayerLogin);
@@ -151,7 +150,6 @@ public class KeepLitMod {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
 
         dispatcher.register(Commands.literal("keeplit")
-            // /keeplit link - доступна всем игрокам
             .then(Commands.literal("link")
                 .executes(ctx -> {
                     String url = (config.web.publicUrl != null && !config.web.publicUrl.isEmpty())
@@ -171,8 +169,8 @@ public class KeepLitMod {
                     return 1;
                 })
             )
-            // /keeplit stats - только для OP
             .then(Commands.literal("stats")
+                .requires(source -> source.hasPermission(3))
                 .executes(ctx -> {
                     BillingPeriod period = new BillingPeriod(config.billingDay, config.timeZone);
                     List<Session> sessions = sessionStore.getSessions();
@@ -207,7 +205,6 @@ public class KeepLitMod {
                     return 1;
                 })
             )
-            // /keeplit reload - только для OP
             .then(Commands.literal("reload")
                 .requires(source -> source.hasPermission(3))
                 .executes(ctx -> {
@@ -216,7 +213,6 @@ public class KeepLitMod {
                     return 1;
                 })
             )
-            // /keeplit export - только для OP
             .then(Commands.literal("export")
                 .requires(source -> source.hasPermission(3))
                 .executes(ctx -> {
@@ -255,7 +251,6 @@ public class KeepLitMod {
                     return 1;
                 })
             )
-            // /keeplit clear <name> - только для OP
             .then(Commands.literal("clear")
                 .requires(source -> source.hasPermission(3))
                 .then(Commands.argument("name", StringArgumentType.string())
@@ -280,7 +275,6 @@ public class KeepLitMod {
                     })
                 )
             )
-            // /keeplit merge <name1> <name2> - только для OP
             .then(Commands.literal("merge")
                 .requires(source -> source.hasPermission(3))
                 .then(Commands.argument("name1", StringArgumentType.string())
@@ -336,185 +330,25 @@ public class KeepLitMod {
             InetSocketAddress address = new InetSocketAddress(config.web.host, config.web.port);
             httpServer = HttpServer.create(address, 0);
 
-            // Главная страница (текущий период)
+            // Главная страница + статика + API
             httpServer.createContext("/", exchange -> {
-                if ("POST".equalsIgnoreCase(exchange.getRequestMethod()) && exchange.getRequestURI().getPath().equals("/api/mark-paid")) {
+                String path = exchange.getRequestURI().getPath();
+
+                if ("POST".equalsIgnoreCase(exchange.getRequestMethod()) && path.equals("/api/mark-paid")) {
                     handleMarkPaid(exchange);
                     return;
                 }
 
-                BillingPeriod period = new BillingPeriod(config.billingDay, config.timeZone);
-                List<Session> sessions = sessionStore.getSessions();
-                StatsCalculator.BillingResult billing = StatsCalculator.calculate(sessions, period, config);
-                List<Payment> payments = paymentStore.getPayments();
-
-                Map<String, Long> lastSeen = new HashMap<>();
-                for (Session s : sessions) {
-                    lastSeen.merge(s.uuid, s.joinAt, Math::max);
+                if (!path.equals("/")) {
+                    if (tryServeStatic(exchange, path)) return;
+                    byte[] nf = "404 Not Found".getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(404, nf.length);
+                    try (OutputStream os = exchange.getResponseBody()) { os.write(nf); }
+                    return;
                 }
 
-                long collectedTotal = paymentStore.getTotal(period.startMs);
-                int progressPercent = billing.totalCost > 0 ? (int) Math.min(100, (collectedTotal * 100) / billing.totalCost) : 0;
-
-                List<String> paidUuids = new ArrayList<>();
-                for (Payment p : payments) {
-                    if (p.timestamp >= period.startMs) {
-                        paidUuids.add(p.playerUuid);
-                    }
-                }
-
-                StringBuilder activeRows = new StringBuilder();
-                for (StatsCalculator.PlayerStats p : billing.activePlayers) {
-                    boolean isPaid = paidUuids.contains(p.uuid);
-                    String lastSeenStr = lastSeen.containsKey(p.uuid) ? formatDate(lastSeen.get(p.uuid)) : "-";
-
-                    String actionCell;
-                    if (isPaid) {
-                        actionCell = "<span class='paid-badge'>✔ Оплачено</span>";
-                    } else {
-                        actionCell = String.format(
-                            "<button class='btn' onclick=\"markPaid('%s', %d)\">Я оплатил</button>",
-                            p.uuid, p.recommendedAmount
-                        );
-                    }
-
-                    activeRows.append(String.format(
-                        "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='amount'>%d %s</td><td>%s</td></tr>",
-                        escapeHtml(p.name),
-                        lastSeenStr,
-                        p.getFormattedTime(),
-                        p.getFormattedShare(),
-                        p.recommendedAmount,
-                        escapeHtml(billing.currency),
-                        actionCell
-                    ));
-                }
-                if (activeRows.length() == 0) {
-                    activeRows.append("<tr><td colspan='6' class='empty'>Нет активных игроков</td></tr>");
-                }
-
-                StringBuilder newbieRows = new StringBuilder();
-                for (StatsCalculator.PlayerStats p : billing.newbies) {
-                    String lastSeenStr = lastSeen.containsKey(p.uuid) ? formatDate(lastSeen.get(p.uuid)) : "-";
-                    newbieRows.append(String.format(
-                        "<tr><td>%s</td><td>%s</td><td>%s</td><td class='newbie-note'>Платить не обязательно</td></tr>",
-                        escapeHtml(p.name),
-                        lastSeenStr,
-                        p.getFormattedTime()
-                    ));
-                }
-
-                String html = """
-                        <!DOCTYPE html>
-                        <html lang="ru">
-                        <head>
-                            <meta charset="UTF-8">
-                            <title>KeepLit - Биллинг</title>
-                            <style>
-                                body { background: #202020; color: #e8e8e8; font-family: monospace; padding: 48px; max-width: 900px; margin: 0 auto; }
-                                h1 { color: #ff9900; text-align: center; }
-                                h2 { color: #ff9900; border-bottom: 1px solid #444; padding-bottom: 5px; }
-                                .period { text-align: center; color: #aaa; margin-bottom: 20px; }
-                                .card { background: #2d2d2d; border: 1px solid #444; padding: 24px; margin-bottom: 30px; border-radius: 8px; }
-                                .target { font-size: 28px; color: #4caf50; text-align: center; margin-bottom: 10px; }
-                                .progress-bar { background: #444; border-radius: 4px; height: 20px; margin: 15px 0; overflow: hidden; }
-                                .progress-fill { background: #4caf50; height: 100%%; text-align: center; color: #fff; font-weight: bold; line-height: 20px; transition: width 0.5s; }
-                                table { width: 100%%; border-collapse: collapse; }
-                                th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
-                                th { color: #ff9900; }
-                                .amount { font-weight: bold; color: #fff; text-align: right; }
-                                .newbie-note { color: #888; font-style: italic; }
-                                .empty { text-align: center; color: #666; }
-                                .btn { background: #ff9900; color: #000; border: none; padding: 6px 12px; cursor: pointer; font-weight: bold; border-radius: 4px; }
-                                .btn:hover { background: #ffb84d; }
-                                .paid-badge { color: #4caf50; font-weight: bold; }
-                                .pay-link { display: block; text-align: center; margin: 20px 0; }
-                                .pay-link a { background: #4caf50; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-size: 18px; }
-                                .days-remaining { text-align: center; font-size: 16px; margin-bottom: 15px; }
-                                .days-remaining.warning { color: #ff4444; font-weight: bold; }
-                            </style>
-                        </head>
-                        <body>
-                            <h1>🔥 KeepLit</h1>
-                            <div style="text-align:center; margin-bottom:15px;">
-                                <a href="/history" style="color:#ff9900; text-decoration:none;">📚 История периодов</a>
-                            </div>
-                            <div class="period">Расчётный период: <b>%s</b></div>
-                            <div class="days-remaining %s">До конца периода: <b>%d</b> дн.</div>
-                            <div class="card">
-                                <div class="target">Цель: %d %s</div>
-                                <div style="text-align:center; font-size: 18px;">Собрано: <b>%d %s</b></div>
-                                <div class="progress-bar">
-                                    <div class="progress-fill" style="width: %d%%;">%d%%</div>
-                                </div>
-                                <div class="pay-link">
-                                    <a href="%s" target="_blank">💳 Перейти к оплате</a>
-                                </div>
-                                <p style="text-align:center; font-size:12px; color:#888;">После перевода нажмите "Я оплатил" в таблице.</p>
-                            </div>
-                            <div class="card">
-                                <h2>Участники сбора</h2>
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Игрок</th>
-                                            <th>Последний вход</th>
-                                            <th>Время</th>
-                                            <th>Доля</th>
-                                            <th style="text-align:right;">Рекомендация</th>
-                                            <th>Статус</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        %s
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div class="card" style="background: #252525;">
-                                <h2 style="color: #aaa;">Новички</h2>
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th>Игрок</th>
-                                            <th>Последний вход</th>
-                                            <th>Время</th>
-                                            <th>Статус</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        %s
-                                    </tbody>
-                                </table>
-                            </div>
-                            <script>
-                                function markPaid(uuid, amount) {
-                                    if (!confirm('Вы действительно оплатили ' + amount + ' ' + '%s?')) return;
-                                    fetch('/api/mark-paid', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ uuid: uuid, amount: amount })
-                                    }).then(r => { if(r.ok) location.reload(); else alert('Ошибка'); });
-                                }
-                            </script>
-                        </body>
-                        </html>
-                        """.formatted(
-                            period.getFormattedRange(),
-                            period.isAlmostOver() ? "warning" : "",
-                            period.getDaysRemaining(),
-                            billing.totalCost, escapeHtml(billing.currency),
-                            collectedTotal, escapeHtml(billing.currency),
-                            progressPercent, progressPercent,
-                            config.web.paymentUrl != null ? config.web.paymentUrl : "#",
-                            activeRows.toString(),
-                            newbieRows.toString(),
-                            escapeHtml(billing.currency)
-                        );
-
-                byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
-                exchange.sendResponseHeaders(200, bytes.length);
-                try (OutputStream os = exchange.getResponseBody()) { os.write(bytes); }
+                String html = renderIndex();
+                sendHtml(exchange, html);
             });
 
             // История периодов
@@ -532,15 +366,12 @@ public class KeepLitMod {
                 String html;
                 if (periodParam != null) {
                     PeriodReport report = findReportByKey(periodParam);
-                    html = report != null ? renderReportHtml(report) : renderHistoryIndexHtml(historyStore.listAllReports());
+                    html = report != null ? renderReport(report) : renderHistoryIndex();
                 } else {
-                    html = renderHistoryIndexHtml(historyStore.listAllReports());
+                    html = renderHistoryIndex();
                 }
 
-                byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
-                exchange.sendResponseHeaders(200, bytes.length);
-                try (OutputStream os = exchange.getResponseBody()) { os.write(bytes); }
+                sendHtml(exchange, html);
             });
 
             httpServer.setExecutor(null);
@@ -549,6 +380,207 @@ public class KeepLitMod {
         } catch (IOException e) {
             LOGGER.error("[KeepLit] ❌ Не удалось запустить веб-сервер", e);
         }
+    }
+
+    /** Отдаёт файл из папки keeplit/web (js, css, картинки). */
+    private boolean tryServeStatic(com.sun.net.httpserver.HttpExchange exchange, String path) throws IOException {
+        Path webDir = templateStore.getWebDir();
+        Path file = webDir.resolve(path.substring(1)).normalize();
+        if (!file.startsWith(webDir) || !Files.isRegularFile(file)) return false;
+
+        byte[] data = Files.readAllBytes(file);
+        String ct = "application/octet-stream";
+        if (path.endsWith(".js")) ct = "application/javascript; charset=UTF-8";
+        else if (path.endsWith(".css")) ct = "text/css; charset=UTF-8";
+        else if (path.endsWith(".png")) ct = "image/png";
+        else if (path.endsWith(".jpg")) ct = "image/jpeg";
+        else if (path.endsWith(".svg")) ct = "image/svg+xml";
+        else if (path.endsWith(".ico")) ct = "image/x-icon";
+        else if (path.endsWith(".html")) ct = "text/html; charset=UTF-8";
+
+        exchange.getResponseHeaders().set("Content-Type", ct);
+        exchange.sendResponseHeaders(200, data.length);
+        try (OutputStream os = exchange.getResponseBody()) { os.write(data); }
+        return true;
+    }
+
+    private void sendHtml(com.sun.net.httpserver.HttpExchange exchange, String html) throws IOException {
+        byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
+        exchange.sendResponseHeaders(200, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) { os.write(bytes); }
+    }
+
+    private String renderTemplate(String name, Map<String, String> vars) {
+        String tpl = templateStore.load(name);
+        for (Map.Entry<String, String> e : vars.entrySet()) {
+            tpl = tpl.replace("{{" + e.getKey() + "}}", e.getValue());
+        }
+        return tpl;
+    }
+
+    // --- Рендер страниц ---
+
+    private String renderIndex() {
+        BillingPeriod period = new BillingPeriod(config.billingDay, config.timeZone);
+        List<Session> sessions = sessionStore.getSessions();
+        StatsCalculator.BillingResult billing = StatsCalculator.calculate(sessions, period, config);
+        List<Payment> payments = paymentStore.getPayments();
+
+        Map<String, Long> lastSeen = new HashMap<>();
+        for (Session s : sessions) {
+            lastSeen.merge(s.uuid, s.joinAt, Math::max);
+        }
+
+        long collectedTotal = paymentStore.getTotal(period.startMs);
+        int progressPercent = billing.totalCost > 0 ? (int) Math.min(100, (collectedTotal * 100) / billing.totalCost) : 0;
+
+        List<String> paidUuids = new ArrayList<>();
+        for (Payment p : payments) {
+            if (p.timestamp >= period.startMs) {
+                paidUuids.add(p.playerUuid);
+            }
+        }
+
+        StringBuilder activeRows = new StringBuilder();
+        for (StatsCalculator.PlayerStats p : billing.activePlayers) {
+            boolean isPaid = paidUuids.contains(p.uuid);
+            String lastSeenStr = lastSeen.containsKey(p.uuid) ? formatDate(lastSeen.get(p.uuid)) : "-";
+
+            String actionCell;
+            if (isPaid) {
+                actionCell = "<span class='paid-badge'>✔ Оплачено</span>";
+            } else {
+                actionCell = String.format(
+                    "<button class='btn' onclick=\"markPaid('%s', %d)\">Я оплатил</button>",
+                    p.uuid, p.recommendedAmount
+                );
+            }
+
+            activeRows.append(String.format(
+                "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='amount'>%d %s</td><td>%s</td></tr>",
+                escapeHtml(p.name), lastSeenStr, p.getFormattedTime(), p.getFormattedShare(),
+                p.recommendedAmount, escapeHtml(billing.currency), actionCell));
+        }
+        if (activeRows.length() == 0) {
+            activeRows.append("<tr><td colspan='6' class='empty'>Нет активных игроков</td></tr>");
+        }
+
+        StringBuilder newbieRows = new StringBuilder();
+        for (StatsCalculator.PlayerStats p : billing.newbies) {
+            String lastSeenStr = lastSeen.containsKey(p.uuid) ? formatDate(lastSeen.get(p.uuid)) : "-";
+            newbieRows.append(String.format(
+                "<tr><td>%s</td><td>%s</td><td>%s</td><td class='newbie-note'>Платить не обязательно</td></tr>",
+                escapeHtml(p.name), lastSeenStr, p.getFormattedTime()));
+        }
+        if (newbieRows.length() == 0) {
+            newbieRows.append("<tr><td colspan='4' class='empty'>Новичков нет</td></tr>");
+        }
+
+        String paymentUrl = (config.web.paymentUrl != null && !config.web.paymentUrl.isEmpty())
+            ? config.web.paymentUrl : "#";
+        String qrText = (config.web.paymentUrl != null && !config.web.paymentUrl.isEmpty())
+            ? config.web.paymentUrl : config.getPublicUrl();
+
+        Map<String, String> vars = new HashMap<>();
+        vars.put("PERIOD_RANGE", period.getFormattedRange());
+        vars.put("DAYS_WARNING_CLASS", period.isAlmostOver() ? "warning" : "");
+        vars.put("DAYS_REMAINING", String.valueOf(period.getDaysRemaining()));
+        vars.put("TARGET_COST", String.valueOf(billing.totalCost));
+        vars.put("CURRENCY", escapeHtml(billing.currency));
+        vars.put("COLLECTED_TOTAL", String.valueOf(collectedTotal));
+        vars.put("PROGRESS_PERCENT", String.valueOf(progressPercent));
+        vars.put("PAYMENT_URL", paymentUrl);
+        vars.put("ACTIVE_ROWS", activeRows.toString());
+        vars.put("NEWBIE_ROWS", newbieRows.toString());
+        vars.put("QR_TEXT", qrText);
+
+        return renderTemplate("index.html", vars);
+    }
+
+    private String renderHistoryIndex() {
+        List<PeriodReport> reports = historyStore.listAllReports();
+
+        StringBuilder rows = new StringBuilder();
+        if (reports.isEmpty()) {
+            rows.append("<tr><td colspan='4' class='empty'>Закрытых периодов пока нет</td></tr>");
+        } else {
+            for (PeriodReport r : reports) {
+                int progress = r.targetCost > 0 ? (int) Math.min(100, (r.totalCollected * 100) / r.targetCost) : 0;
+                rows.append(String.format(
+                    "<tr><td><a href='/history?period=%s'>%s — %s</a></td><td>%d / %d %s</td><td>%d%%</td><td>%d активных</td></tr>",
+                    PeriodReport.periodKey(r.periodStart, r.periodEnd),
+                    r.periodStart, r.periodEnd,
+                    r.totalCollected, r.targetCost, escapeHtml(r.currency),
+                    progress, r.activePlayers.size()));
+            }
+        }
+
+        Map<String, String> vars = new HashMap<>();
+        vars.put("REPORT_ROWS", rows.toString());
+        return renderTemplate("history.html", vars);
+    }
+
+    private String renderReport(PeriodReport report) {
+        PeriodReport prev = historyStore.findPrevious(report.periodStart);
+        PeriodReport next = historyStore.findNext(report.periodStart);
+
+        String prevLink = prev != null
+            ? String.format("<a href='/history?period=%s'>← Предыдущий</a>", PeriodReport.periodKey(prev.periodStart, prev.periodEnd))
+            : "<span style='color:#666'>← Предыдущий</span>";
+        String nextLink = next != null
+            ? String.format("<a href='/history?period=%s'>Следующий →</a>", PeriodReport.periodKey(next.periodStart, next.periodEnd))
+            : "<a href='/'>К текущему →</a>";
+
+        int progress = report.targetCost > 0 ? (int) Math.min(100, (report.totalCollected * 100) / report.targetCost) : 0;
+
+        StringBuilder activeRows = new StringBuilder();
+        for (PeriodReport.PlayerEntry p : report.activePlayers) {
+            String lastSeenStr = p.lastSeenMs > 0 ? formatDate(p.lastSeenMs) : "-";
+            String statusCell = p.paid
+                ? "<span class='paid-badge'>✔ Оплачено</span>"
+                : "<span class='unpaid'>Не отмечено</span>";
+            activeRows.append(String.format(
+                "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='amount'>%d %s</td><td>%s</td></tr>",
+                escapeHtml(p.name), lastSeenStr, p.getFormattedTime(), p.getFormattedShare(),
+                p.recommendedAmount, escapeHtml(report.currency), statusCell));
+        }
+        if (activeRows.length() == 0) {
+            activeRows.append("<tr><td colspan='6' class='empty'>Нет активных игроков</td></tr>");
+        }
+
+        StringBuilder newbieRows = new StringBuilder();
+        for (PeriodReport.PlayerEntry p : report.newbies) {
+            String lastSeenStr = p.lastSeenMs > 0 ? formatDate(p.lastSeenMs) : "-";
+            newbieRows.append(String.format(
+                "<tr><td>%s</td><td>%s</td><td>%s</td><td class='newbie-note'>Платить не обязательно</td></tr>",
+                escapeHtml(p.name), lastSeenStr, p.getFormattedTime()));
+        }
+        if (newbieRows.length() == 0) {
+            newbieRows.append("<tr><td colspan='4' class='empty'>Новичков нет</td></tr>");
+        }
+
+        Map<String, String> vars = new HashMap<>();
+        vars.put("PREV_LINK", prevLink);
+        vars.put("NEXT_LINK", nextLink);
+        vars.put("PERIOD_START", report.periodStart);
+        vars.put("PERIOD_END", report.periodEnd);
+        vars.put("TARGET_COST", String.valueOf(report.targetCost));
+        vars.put("CURRENCY", escapeHtml(report.currency));
+        vars.put("COLLECTED_TOTAL", String.valueOf(report.totalCollected));
+        vars.put("PROGRESS_PERCENT", String.valueOf(progress));
+        vars.put("ACTIVE_ROWS", activeRows.toString());
+        vars.put("NEWBIE_ROWS", newbieRows.toString());
+        vars.put("CREATED_AT", escapeHtml(report.createdAt));
+
+        return renderTemplate("report.html", vars);
+    }
+
+    private PeriodReport findReportByKey(String key) {
+        for (PeriodReport r : historyStore.listAllReports()) {
+            if (PeriodReport.periodKey(r.periodStart, r.periodEnd).equals(key)) return r;
+        }
+        return null;
     }
 
     private void handleMarkPaid(com.sun.net.httpserver.HttpExchange exchange) throws IOException {
@@ -569,199 +601,6 @@ public class KeepLitMod {
         } finally {
             exchange.close();
         }
-    }
-
-    private PeriodReport findReportByKey(String key) {
-        for (PeriodReport r : historyStore.listAllReports()) {
-            if (PeriodReport.periodKey(r.periodStart, r.periodEnd).equals(key)) return r;
-        }
-        return null;
-    }
-
-    private String renderHistoryIndexHtml(List<PeriodReport> reports) {
-        StringBuilder rows = new StringBuilder();
-        if (reports.isEmpty()) {
-            rows.append("<tr><td colspan='4' class='empty'>Закрытых периодов пока нет</td></tr>");
-        } else {
-            for (PeriodReport r : reports) {
-                int progress = r.targetCost > 0 ? (int) Math.min(100, (r.totalCollected * 100) / r.targetCost) : 0;
-                rows.append(String.format(
-                    "<tr><td><a href='/history?period=%s'>%s — %s</a></td><td>%d / %d %s</td><td>%d%%</td><td>%d активных</td></tr>",
-                    PeriodReport.periodKey(r.periodStart, r.periodEnd),
-                    r.periodStart, r.periodEnd,
-                    r.totalCollected, r.targetCost, escapeHtml(r.currency),
-                    progress, r.activePlayers.size()));
-            }
-        }
-
-        return String.format("""
-            <!DOCTYPE html>
-            <html lang="ru">
-            <head>
-                <meta charset="UTF-8">
-                <title>KeepLit - История периодов</title>
-                <style>
-                    body { background: #202020; color: #e8e8e8; font-family: monospace; padding: 48px; max-width: 900px; margin: 0 auto; }
-                    h1 { color: #ff9900; text-align: center; }
-                    .back { text-align: center; margin-bottom: 20px; }
-                    .back a { color: #ff9900; text-decoration: none; }
-                    .card { background: #2d2d2d; border: 1px solid #444; padding: 24px; border-radius: 8px; }
-                    table { width: 100%%; border-collapse: collapse; }
-                    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
-                    th { color: #ff9900; }
-                    td a { color: #4caf50; font-weight: bold; text-decoration: none; }
-                    td a:hover { text-decoration: underline; }
-                    .empty { text-align: center; color: #666; }
-                </style>
-            </head>
-            <body>
-                <h1>📚 История периодов</h1>
-                <div class="back"><a href="/">← К текущему периоду</a></div>
-                <div class="card">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Период</th>
-                                <th>Собрано</th>
-                                <th>Прогресс</th>
-                                <th>Игроков</th>
-                            </tr>
-                        </thead>
-                        <tbody>%s</tbody>
-                    </table>
-                </div>
-            </body>
-            </html>
-            """, rows.toString());
-    }
-
-    private String renderReportHtml(PeriodReport report) {
-        PeriodReport prev = historyStore.findPrevious(report.periodStart);
-        PeriodReport next = historyStore.findNext(report.periodStart);
-
-        String prevLink = prev != null
-            ? String.format("<a href='/history?period=%s'>← Предыдущий</a>", PeriodReport.periodKey(prev.periodStart, prev.periodEnd))
-            : "<span style='color:#666'>← Предыдущий</span>";
-        String nextLink = next != null
-            ? String.format("<a href='/history?period=%s'>Следующий →</a>", PeriodReport.periodKey(next.periodStart, next.periodEnd))
-            : "<a href='/'>К текущему →</a>";
-
-        int progress = report.targetCost > 0 ? (int) Math.min(100, (report.totalCollected * 100) / report.targetCost) : 0;
-
-        StringBuilder activeRows = new StringBuilder();
-        for (PeriodReport.PlayerEntry p : report.activePlayers) {
-            String lastSeenStr = p.lastSeenMs > 0 ? formatDate(p.lastSeenMs) : "-";
-            String statusCell = p.paid
-                ? "<span class='paid-badge'>✔ Оплачено</span>"
-                : "<span style='color:#ff6b6b'>Не отмечено</span>";
-            activeRows.append(String.format(
-                "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class='amount'>%d %s</td><td>%s</td></tr>",
-                escapeHtml(p.name), lastSeenStr, p.getFormattedTime(),
-                p.getFormattedShare(), p.recommendedAmount, escapeHtml(report.currency),
-                statusCell));
-        }
-        if (activeRows.length() == 0) {
-            activeRows.append("<tr><td colspan='6' class='empty'>Нет активных игроков</td></tr>");
-        }
-
-        StringBuilder newbieRows = new StringBuilder();
-        for (PeriodReport.PlayerEntry p : report.newbies) {
-            String lastSeenStr = p.lastSeenMs > 0 ? formatDate(p.lastSeenMs) : "-";
-            newbieRows.append(String.format(
-                "<tr><td>%s</td><td>%s</td><td>%s</td><td class='newbie-note'>Платить не обязательно</td></tr>",
-                escapeHtml(p.name), lastSeenStr, p.getFormattedTime()));
-        }
-        if (newbieRows.length() == 0) {
-            newbieRows.append("<tr><td colspan='4' class='empty'>Новичков нет</td></tr>");
-        }
-
-        return String.format("""
-            <!DOCTYPE html>
-            <html lang="ru">
-            <head>
-                <meta charset="UTF-8">
-                <title>KeepLit - Отчёт %s — %s</title>
-                <style>
-                    body { background: #202020; color: #e8e8e8; font-family: monospace; padding: 48px; max-width: 900px; margin: 0 auto; }
-                    h1 { color: #ff9900; text-align: center; }
-                    h2 { color: #ff9900; border-bottom: 1px solid #444; padding-bottom: 5px; }
-                    .nav { display: flex; justify-content: space-between; margin-bottom: 20px; }
-                    .nav a { color: #ff9900; text-decoration: none; }
-                    .nav a:hover { text-decoration: underline; }
-                    .period { text-align: center; color: #aaa; margin-bottom: 20px; }
-                    .archived-badge { text-align: center; background: #3a2f20; color: #ff9900; padding: 8px; border-radius: 4px; margin-bottom: 20px; }
-                    .card { background: #2d2d2d; border: 1px solid #444; padding: 24px; margin-bottom: 30px; border-radius: 8px; }
-                    .target { font-size: 28px; color: #4caf50; text-align: center; margin-bottom: 10px; }
-                    .progress-bar { background: #444; border-radius: 4px; height: 20px; margin: 15px 0; overflow: hidden; }
-                    .progress-fill { background: #4caf50; height: 100%%; text-align: center; color: #fff; font-weight: bold; line-height: 20px; }
-                    table { width: 100%%; border-collapse: collapse; }
-                    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #444; }
-                    th { color: #ff9900; }
-                    .amount { font-weight: bold; color: #fff; text-align: right; }
-                    .newbie-note { color: #888; font-style: italic; }
-                    .paid-badge { color: #4caf50; font-weight: bold; }
-                    .empty { text-align: center; color: #666; }
-                    .meta { text-align: center; color: #666; font-size: 12px; margin-top: 30px; }
-                </style>
-            </head>
-            <body>
-                <h1>📜 Архивный отчёт</h1>
-                <div class="archived-badge">⚠ Период закрыт. Данные заморожены.</div>
-                <div class="nav">
-                    <div>%s</div>
-                    <div>%s</div>
-                </div>
-                <div class="period">Период: <b>%s — %s</b></div>
-                <div class="card">
-                    <div class="target">Цель: %d %s</div>
-                    <div style="text-align:center; font-size: 18px;">Собрано: <b>%d %s</b></div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: %d%%;">%d%%</div>
-                    </div>
-                </div>
-                <div class="card">
-                    <h2>Участники сбора</h2>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Игрок</th>
-                                <th>Последний вход</th>
-                                <th>Время</th>
-                                <th>Доля</th>
-                                <th style="text-align:right;">Рекомендация</th>
-                                <th>Статус</th>
-                            </tr>
-                        </thead>
-                        <tbody>%s</tbody>
-                    </table>
-                </div>
-                <div class="card" style="background: #252525;">
-                    <h2 style="color: #aaa;">Новички</h2>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Игрок</th>
-                                <th>Последний вход</th>
-                                <th>Время</th>
-                                <th>Статус</th>
-                            </tr>
-                        </thead>
-                        <tbody>%s</tbody>
-                    </table>
-                </div>
-                <div class="meta">Отчёт создан: %s</div>
-            </body>
-            </html>
-            """,
-            report.periodStart, report.periodEnd,
-            prevLink, nextLink,
-            report.periodStart, report.periodEnd,
-            report.targetCost, escapeHtml(report.currency),
-            report.totalCollected, escapeHtml(report.currency),
-            progress, progress,
-            activeRows.toString(),
-            newbieRows.toString(),
-            escapeHtml(report.createdAt));
     }
 
     private void stopWebServer() {
