@@ -20,6 +20,17 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.ArrayList;
 
+import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.network.chat.Component;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
+
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.HoverEvent;
+
 
 
 
@@ -56,8 +67,10 @@ public class KeepLitMod {
         NeoForge.EVENT_BUS.addListener(this::onServerStopping);
         NeoForge.EVENT_BUS.addListener(this::onPlayerLogin);
         NeoForge.EVENT_BUS.addListener(this::onPlayerLogout);
+        NeoForge.EVENT_BUS.addListener(this::onRegisterCommands);
 
         LOGGER.info("[KeepLit] Мод инициализирован.");
+
 
     }
 
@@ -74,6 +87,205 @@ public class KeepLitMod {
         }
         stopWebServer();
     }
+
+    private void onRegisterCommands(RegisterCommandsEvent event) {
+        CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
+
+        dispatcher.register(Commands.literal("keeplit")
+
+            // /keeplit link - доступна всем игрокам
+            // /keeplit link - доступна всем игрокам
+            .then(Commands.literal("link")
+                .executes(ctx -> {
+                    String url = (config.web.publicUrl != null && !config.web.publicUrl.isEmpty())
+                        ? config.web.publicUrl
+                        : "http://localhost:" + config.web.port;
+
+                    Component message = Component.literal("§6[KeepLit] §fСсылка на статистику: ")
+                        .append(Component.literal(url)
+                            .withStyle(style -> style
+                                .withColor(ChatFormatting.YELLOW)
+                                .withUnderlined(true)
+                                .withClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, url))
+                                .withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                                    Component.literal("Нажми, чтобы открыть в браузере")))));
+
+                    ctx.getSource().sendSuccess(() -> message, false);
+                    return 1;
+                })
+            )
+
+            // /keeplit stats - только для OP
+            .then(Commands.literal("stats")
+                .requires(source -> source.hasPermission(3))
+                .executes(ctx -> {
+                    BillingPeriod period = new BillingPeriod(config.billingDay, config.timeZone);
+                    List<Session> sessions = sessionStore.getSessions();
+                    StatsCalculator.BillingResult billing = StatsCalculator.calculate(sessions, period, config);
+
+                    long confirmedTotal = paymentStore.getTotal(period.startMs);
+
+                    ctx.getSource().sendSuccess(() -> Component.literal("§6[KeepLit] Статистика периода: §f" + period.getFormattedRange()), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§eАктивных игроков: §f" + billing.activePlayers.size()), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§eНовичков: §f" + billing.newbies.size()), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§eСобрано: §f" + confirmedTotal + " " + config.billing.currency), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§eЦель: §f" + config.billing.cost + " " + config.billing.currency), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§eДней до конца: §f" + period.getDaysRemaining()), false);
+
+                    List<StatsCalculator.PlayerStats> allPlayers = new ArrayList<>();
+                    allPlayers.addAll(billing.activePlayers);
+                    allPlayers.addAll(billing.newbies);
+
+                    if (!allPlayers.isEmpty()) {
+                        ctx.getSource().sendSuccess(() -> Component.literal("§6[KeepLit] Игроки за период:"), false);
+                        int rank = 1;
+                        for (StatsCalculator.PlayerStats p : allPlayers) {
+                            final int r = rank;
+                            final String name = p.name;
+                            final String time = p.getFormattedTime();
+                            final boolean newbie = p.isNewbie;
+                            ctx.getSource().sendSuccess(() -> Component.literal(
+                                String.format("§e%d. §f%s §7(§f%s§7)%s", r, name, time, newbie ? " §8[новичок]" : "")
+                            ), false);
+                            rank++;
+                        }
+                    }
+
+                    return 1;
+                })
+            )
+
+            // /keeplit reload - только для OP
+            .then(Commands.literal("reload")
+                .requires(source -> source.hasPermission(3))
+                .executes(ctx -> {
+                    config = KeepLitConfig.loadOrCreate(configPath);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§a[KeepLit] Конфиг перезагружен."), false);
+                    return 1;
+                })
+            )
+
+            // /keeplit export - только для OP
+            // /keeplit export - только для OP
+            .then(Commands.literal("export")
+                .requires(source -> source.hasPermission(3))
+                .executes(ctx -> {
+                    try {
+                        Path exportDir = keeplitDir.resolve("exports");
+                        Files.createDirectories(exportDir);
+
+                        BillingPeriod period = new BillingPeriod(config.billingDay, config.timeZone);
+                        List<Session> sessions = sessionStore.getSessions();
+                        StatsCalculator.BillingResult billing = StatsCalculator.calculate(sessions, period, config);
+
+                        StringBuilder csv = new StringBuilder();
+                        csv.append("UUID,Name,Category,TimeMinutes,Time,SharePercent,RecommendedAmount\n");
+
+                        for (StatsCalculator.PlayerStats p : billing.activePlayers) {
+                            csv.append(String.format("%s,%s,active,%d,%s,%.2f,%d\n",
+                                p.uuid, escapeCsv(p.name), p.totalMs / 60000,
+                                p.getFormattedTime(), p.sharePercent, p.recommendedAmount));
+                        }
+
+                        for (StatsCalculator.PlayerStats p : billing.newbies) {
+                            csv.append(String.format("%s,%s,newbie,%d,%s,0.00,0\n",
+                                p.uuid, escapeCsv(p.name), p.totalMs / 60000, p.getFormattedTime()));
+                        }
+
+                        String fileName = String.format("period_%s.csv",
+                            period.start.toLocalDate().toString().replace("-", "_"));
+                        Path exportFile = exportDir.resolve(fileName);
+
+                        FileUtils.writeAtomically(exportFile, csv.toString());
+
+                        ctx.getSource().sendSuccess(() -> Component.literal(
+                            "§a[KeepLit] Экспорт сохранён: §f" + exportFile.toAbsolutePath()), false);
+                    } catch (Exception e) {
+                        LOGGER.error("[KeepLit] Ошибка экспорта", e);
+                        ctx.getSource().sendFailure(Component.literal("§c[KeepLit] Ошибка экспорта: " + e.getMessage()));
+                    }
+                    return 1;
+                })
+            )
+
+            // /keeplit clear <name> - только для OP
+            .then(Commands.literal("clear")
+                .requires(source -> source.hasPermission(3))
+                .then(Commands.argument("name", StringArgumentType.string())
+                    .executes(ctx -> {
+                        String name = StringArgumentType.getString(ctx, "name");
+                        List<String> uuids = findUuidsByName(name);
+
+                        if (uuids.isEmpty()) {
+                            ctx.getSource().sendFailure(Component.literal(
+                                "§c[KeepLit] Игрок с ником '" + name + "' не найден."));
+                            return 0;
+                        }
+
+                        ctx.getSource().sendSuccess(() -> Component.literal(
+                            "§e[KeepLit] Найдено UUID для " + name + ": " + uuids.size()), false);
+
+                        for (String uuid : uuids) {
+                            ctx.getSource().sendSuccess(() -> Component.literal(
+                                "§7  - " + uuid), false);
+                        }
+
+                        ctx.getSource().sendSuccess(() -> Component.literal(
+                            "§e[KeepLit] Очистка записей (в разработке)"), false);
+                        return 1;
+                    })
+                )
+            )
+
+            // /keeplit merge <name1> <name2> - только для OP
+            .then(Commands.literal("merge")
+                .requires(source -> source.hasPermission(3))
+                .then(Commands.argument("name1", StringArgumentType.string())
+                    .then(Commands.argument("name2", StringArgumentType.string())
+                        .executes(ctx -> {
+                            String name1 = StringArgumentType.getString(ctx, "name1");
+                            String name2 = StringArgumentType.getString(ctx, "name2");
+
+                            List<String> uuids1 = findUuidsByName(name1);
+                            List<String> uuids2 = findUuidsByName(name2);
+
+                            if (uuids1.isEmpty() || uuids2.isEmpty()) {
+                                ctx.getSource().sendFailure(Component.literal(
+                                    "§c[KeepLit] Один из игроков не найден."));
+                                return 0;
+                            }
+
+                            ctx.getSource().sendSuccess(() -> Component.literal(
+                                "§e[KeepLit] Слияние " + name1 + " (" + uuids1.size() + " UUID) -> " +
+                                name2 + " (" + uuids2.size() + " UUID)"), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal(
+                                "§e[KeepLit] (в разработке)"), false);
+                            return 1;
+                        })
+                    )
+                )
+            )
+        );
+    }
+
+    private List<String> findUuidsByName(String name) {
+        List<String> uuids = new ArrayList<>();
+        for (Session s : sessionStore.getSessions()) {
+            if (s.name.equalsIgnoreCase(name) && !uuids.contains(s.uuid)) {
+                uuids.add(s.uuid);
+            }
+        }
+        return uuids;
+    }
+
+    private static String escapeCsv(String value) {
+        if (value == null) return "";
+        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
+    }
+
 
     // --- События игроков ---
 
@@ -107,7 +319,7 @@ public class KeepLitMod {
                     return;
                 }
 
-                BillingPeriod period = new BillingPeriod(config.billingDay);
+                BillingPeriod period = new BillingPeriod(config.billingDay, config.timeZone);
                 List<Session> sessions = sessionStore.getSessions();
                 StatsCalculator.BillingResult billing = StatsCalculator.calculate(sessions, period, config);
                 List<Payment> payments = paymentStore.getPayments();
@@ -187,11 +399,14 @@ public class KeepLitMod {
                                 .paid-badge { color: #4caf50; font-weight: bold; }
                                 .pay-link { display: block; text-align: center; margin: 20px 0; }
                                 .pay-link a { background: #4caf50; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-size: 18px; }
+                                .days-remaining { text-align: center; font-size: 16px; margin-bottom: 15px; }
+                                .days-remaining.warning { color: #ff4444; font-weight: bold; }
                             </style>
                         </head>
                         <body>
                             <h1>🔥 KeepLit</h1>
                             <div class="period">Расчётный период: <b>%s</b></div>
+                            <div class="days-remaining %s">До конца периода: <b>%d</b> дн.</div>
 
                             <div class="card">
                                 <div class="target">Цель: %d %s</div>
@@ -254,6 +469,8 @@ public class KeepLitMod {
                         </html>
                         """.formatted(
                             period.getFormattedRange(),
+                            period.isAlmostOver() ? "warning" : "",
+                            period.getDaysRemaining(),
                             billing.totalCost, escapeHtml(billing.currency),
                             collectedTotal, escapeHtml(billing.currency),
                             progressPercent, progressPercent,

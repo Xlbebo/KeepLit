@@ -15,6 +15,8 @@ public class KeepLitConfig {
 
     private static final Logger LOGGER = LogUtils.getLogger();
 
+    public String timeZone = "Europe/Moscow"; // Общий часовой пояс
+
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()
             .disableHtmlEscaping()
@@ -34,6 +36,7 @@ public class KeepLitConfig {
         public int minHours = 2;        // Минимум часов для участия
         public int minAmount = 50;      // Минимальный взнос
         public int roundStep = 25;      // Шаг округления (вверх)
+        public String timeZone = "Europe/Moscow"; // Часовой пояс для расчёта периода
     }
 
     public static class Web {
@@ -74,16 +77,10 @@ public class KeepLitConfig {
 
     public void save(Path path) {
         try {
-            if (path.getParent() != null) {
-                Files.createDirectories(path.getParent());
-            }
-
-            try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
-                GSON.toJson(this, writer);
-            }
-
+            String json = GSON.toJson(this);
+            FileUtils.writeAtomically(path, json);
         } catch (Exception e) {
-            LOGGER.error("[KeepLit] Не удалось сохранить конфиг {}", path, e);
+            LOGGER.error("[KeepLit] Ошибка записи конфига", e);
         }
     }
 

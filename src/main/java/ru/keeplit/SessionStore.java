@@ -42,12 +42,10 @@ public class SessionStore {
         }
     }
 
-    private void save() {
+    public void save() {
         try {
-            if (file.getParent() != null) Files.createDirectories(file.getParent());
-            try (Writer writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
-                GSON.toJson(sessions, writer);
-            }
+            String json = GSON.toJson(sessions);
+            FileUtils.writeAtomically(file, json);
         } catch (Exception e) {
             LOGGER.error("[KeepLit] Ошибка записи сессий", e);
         }

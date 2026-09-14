@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "billingDay": 17,
+  "billingDay": 18,
   "web": {
     "enabled": true,
     "host": "0.0.0.0",
@@ -11,7 +11,7 @@
   "billing": {
     "cost": 900,
     "currency": "₽",
-    "minHours": 0,
+    "minHours": 2,
     "minAmount": 50,
     "roundStep": 25
   }
